@@ -1,0 +1,15 @@
+[Unit]
+Description=Guest network init from kernel cmdline (fc.ip / fc.gw / fc.dns)
+DefaultDependencies=no
+Before=network.target network-pre.target
+After=sysinit.target local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/guestinit
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=network.target

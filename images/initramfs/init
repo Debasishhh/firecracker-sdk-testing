@@ -1,0 +1,49 @@
+#!/bin/sh
+# Firecracker guest initramfs init (M1.4)
+#
+# Mounts an overlayfs:
+#   lower  = /dev/vda  (ro base rootfs ext4)
+#   upper  = /dev/vdb  (rw per-VM overlay ext4, created fresh per VM)
+#   merged = /newroot  → becomes new /
+#
+# After switch_root, systemd takes over as PID 1.
+# Network config is done by guestinit.service reading fc.* cmdline params.
+
+set -e
+
+echo "initramfs: starting"
+
+# Basic pseudo-filesystems
+mount -t devtmpfs  devtmpfs /dev
+mount -t proc      proc     /proc
+mount -t sysfs     sysfs    /sys
+
+# Base rootfs (read-only)
+mkdir -p /base
+mount -t ext4 -o ro /dev/vda /base
+
+# Per-VM writable overlay disk.
+# The overlay disk is created fresh by controld before each boot.
+# We format and mount it here (first-boot format; already clean).
+mkdir -p /rw
+mount -t ext4 /dev/vdb /rw
+
+# Create overlay directories on the rw disk
+mkdir -p /rw/upper /rw/work
+
+# Overlayfs: lower=base, upper=rw/upper, work=rw/work
+mkdir -p /newroot
+mount -t overlay overlay \
+    -o lowerdir=/base,upperdir=/rw/upper,workdir=/rw/work \
+    /newroot
+
+# Move /dev into new root so systemd's udev finds it immediately.
+mkdir -p /newroot/dev
+mount --move /dev /newroot/dev
+
+# Unmount proc/sys — systemd will remount them.
+umount /proc
+umount /sys
+
+echo "initramfs: switching root"
+exec switch_root /newroot /sbin/init
