@@ -1,7 +1,6 @@
 [Unit]
 Description=Firecracker in-guest vsock agent
-After=network.target docker.service
-Wants=docker.service
+After=network.target
 
 [Service]
 Type=simple

@@ -56,6 +56,12 @@ RUN systemctl mask \
 # Enable Docker at boot
 RUN systemctl enable docker.service containerd.service || true
 
+# Docker storage driver: overlay2-on-overlayfs (Firecracker root) needs kernel >= 5.11.
+# The Firecracker quickstart kernel is 5.10 so we use vfs which works universally.
+# Switch back to overlay2 once you move to a newer kernel build.
+RUN mkdir -p /etc/docker \
+ && echo '{"storage-driver":"vfs"}' > /etc/docker/daemon.json
+
 # Placeholder directories for our binaries (populated by build-rootfs.sh)
 RUN mkdir -p /usr/local/bin
 

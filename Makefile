@@ -4,7 +4,7 @@ KERNEL       := /tmp/vmlinux
 INITRAMFS    := /tmp/initramfs.cpio.gz
 
 .PHONY: all build-host build-guest bake-image build-initramfs build-kernel \
-        build-vsock-client setup-host validate chmod-scripts clean
+        build-vsock-client setup-host validate chmod-scripts debug-rootfs clean distclean
 
 all: build-host build-guest
 
@@ -50,8 +50,18 @@ guest-image: bake-image build-initramfs build-kernel
 setup-host: chmod-scripts
 	sudo ./scripts/setup-host.sh
 
-validate: build-vsock-client bake-image build-initramfs build-kernel
+validate: build-vsock-client bake-image build-kernel
 	sudo ./images/validate.sh
+
+# Mount rootfs and show key paths — run before validate to confirm contents
+debug-rootfs:
+	$(eval TMP := $(shell mktemp -d))
+	sudo mount -o loop,ro $(ROOTFS) $(TMP)
+	@echo "=== /usr/local/bin ===" && ls -lh $(TMP)/usr/local/bin/
+	@echo "=== guest-agent.service ===" && cat $(TMP)/etc/systemd/system/guest-agent.service
+	@echo "=== multi-user.target.wants ===" && ls -l $(TMP)/etc/systemd/system/multi-user.target.wants/
+	@echo "=== /etc/docker/daemon.json ===" && cat $(TMP)/etc/docker/daemon.json 2>/dev/null || echo "(not present)"
+	sudo umount $(TMP) && rmdir $(TMP)
 
 # Ensure shell scripts are executable after git clone on Linux
 chmod-scripts:
@@ -65,4 +75,12 @@ chmod-scripts:
 
 clean:
 	rm -rf $(BINARY_DIR)
-	rm -f /tmp/rootfs-vm*.ext4 /tmp/fc-*.sock* /tmp/fc-validate-*.ext4
+	rm -f /tmp/rootfs-vm*.ext4 /tmp/fc-*.sock* /tmp/fc-validate*.ext4 /tmp/fc-validate*.log
+
+# Remove all build + runtime artifacts including kernel, rootfs, networking state
+distclean: clean
+	rm -f $(ROOTFS) $(KERNEL) $(INITRAMFS)
+	-sudo ip link del fc-validate 2>/dev/null
+	-sudo ip link del fcbr0       2>/dev/null
+	-sudo pkill -f firecracker    2>/dev/null
+	@echo "Note: iptables NAT/FORWARD rules left intact — remove manually if needed"
