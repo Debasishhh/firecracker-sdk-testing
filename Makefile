@@ -4,7 +4,7 @@ KERNEL       := /tmp/vmlinux
 INITRAMFS    := /tmp/initramfs.cpio.gz
 
 .PHONY: all build-host build-guest bake-image build-initramfs build-kernel \
-        build-vsock-client setup-host validate clean
+        build-vsock-client setup-host validate chmod-scripts clean
 
 all: build-host build-guest
 
@@ -47,11 +47,19 @@ guest-image: bake-image build-initramfs build-kernel
 
 # ── Host setup & validation ───────────────────────────────────────────────────
 
-setup-host:
+setup-host: chmod-scripts
 	sudo ./scripts/setup-host.sh
 
 validate: build-vsock-client bake-image build-initramfs build-kernel
 	sudo ./images/validate.sh
+
+# Ensure shell scripts are executable after git clone on Linux
+chmod-scripts:
+	chmod +x scripts/setup-host.sh \
+	         images/build-rootfs.sh \
+	         images/build-kernel.sh \
+	         images/initramfs/build.sh \
+	         images/validate.sh
 
 # ── Housekeeping ─────────────────────────────────────────────────────────────
 

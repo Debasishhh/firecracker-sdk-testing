@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mdlayher/vsock"
@@ -27,8 +28,11 @@ import (
 const (
 	listenPort      = 52
 	agentVersion    = "0.1.0"
-	dockerReadyWait = 30 * time.Second
+	dockerReadyWait = 60 * time.Second
 )
+
+// dockerReady is set true by the background Docker poller once docker info succeeds.
+var dockerReady atomic.Bool
 
 // Request is the JSON body of an incoming message.
 type Request struct {
@@ -75,7 +79,11 @@ func buildEnv(overrides map[string]string) []string {
 }
 
 func handlePing(conn io.Writer) {
-	writeFrame(conn, map[string]any{"ok": true, "version": agentVersion})
+	writeFrame(conn, map[string]any{
+		"ok":           true,
+		"version":      agentVersion,
+		"docker_ready": dockerReady.Load(),
+	})
 }
 
 func handleExec(conn io.ReadWriter, req *Request) {
@@ -241,30 +249,33 @@ func handle(conn io.ReadWriter) {
 	}
 }
 
-// waitForDocker polls until `docker info` succeeds or the deadline is reached.
-// This ensures "ping" readiness implies Docker is up.
-func waitForDocker(deadline time.Duration) {
+// pollDocker sets dockerReady once `docker info` succeeds. Runs as a goroutine
+// so the vsock listener is up immediately and ping responses include docker_ready.
+func pollDocker(deadline time.Duration) {
 	end := time.Now().Add(deadline)
 	for time.Now().Before(end) {
 		if exec.Command("docker", "info").Run() == nil {
+			dockerReady.Store(true)
+			fmt.Println("guest-agent: Docker ready")
 			return
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	fmt.Fprintln(os.Stderr, "guest-agent: warning: docker not ready within timeout, continuing anyway")
+	fmt.Fprintln(os.Stderr, "guest-agent: warning: Docker not ready within timeout")
 }
 
 func main() {
-	fmt.Println("guest-agent: waiting for Docker...")
-	waitForDocker(dockerReadyWait)
-
+	// Bind vsock FIRST so the host can ping us immediately after boot.
+	// Docker readiness is tracked in the background and reported in ping responses.
 	ln, err := vsock.Listen(listenPort, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "guest-agent: listen vsock :%d: %v\n", listenPort, err)
 		os.Exit(1)
 	}
 	defer ln.Close()
-	fmt.Printf("guest-agent: ready on vsock port %d (version %s)\n", listenPort, agentVersion)
+	fmt.Printf("guest-agent: listening on vsock port %d (version %s)\n", listenPort, agentVersion)
+
+	go pollDocker(dockerReadyWait)
 
 	for {
 		conn, err := ln.Accept()

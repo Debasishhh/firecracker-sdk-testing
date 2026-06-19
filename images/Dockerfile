@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Package managers
     apt-transport-https ca-certificates software-properties-common \
     # Networking (egress + Docker bridge)
-    iproute2 iptables ip6tables iputils-ping dnsutils \
+    iproute2 iptables iputils-ping dnsutils \
     # Utilities
     vim nano less procps htop lsof file \
     # Docker requirements
