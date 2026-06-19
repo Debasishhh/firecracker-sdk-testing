@@ -84,11 +84,12 @@ check_rootfs "usr/local/bin/guestinit"             "guestinit binary"
 check_rootfs "etc/systemd/system/guest-agent.service"  "guest-agent.service unit"
 check_rootfs "etc/systemd/system/guestinit.service"    "guestinit.service unit"
 
-# Check service is enabled (symlink in wants directory).
-# Use -L (is a symlink) not -e (target exists on host) because the symlink
-# target is an in-VM absolute path that won't resolve from the host mount.
-WANTS="$ROOTFS_MNT/etc/systemd/system/multi-user.target.wants/guest-agent.service"
-[ -L "$WANTS" ] || fail "guest-agent.service not enabled in rootfs — rebuild with: sudo make bake-image"
+# Check service is enabled by listing the directory.
+# Avoid -e/-L which both require the symlink target to be resolvable from the
+# host mount point — ls|grep just checks the filename, no resolution needed.
+ls "$ROOTFS_MNT/etc/systemd/system/multi-user.target.wants/" \
+    | grep -q "^guest-agent.service$" \
+    || fail "guest-agent.service not enabled in rootfs — rebuild with: sudo make bake-image"
 ok "rootfs has guest-agent binary + service enabled"
 
 sudo umount "$ROOTFS_MNT" && rmdir "$ROOTFS_MNT"
