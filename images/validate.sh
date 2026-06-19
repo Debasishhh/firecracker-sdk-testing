@@ -27,7 +27,7 @@ KERNEL="${KERNEL:-/tmp/vmlinux}"
 ROOTFS="${ROOTFS:-/tmp/rootfs.ext4}"
 VSOCK_CLIENT="$REPO_ROOT/bin/vsock-client"
 
-VM_CID=99
+VM_CID=3
 VM_MEM_MIB=2048
 VM_VCPUS=2
 VM_IP="10.99.0.2/24"
@@ -46,7 +46,7 @@ cleanup() {
     echo "==> Cleanup..."
     [ -n "${FC_PID:-}" ] && kill "$FC_PID" 2>/dev/null || true
     ip link del "$TAP_DEV" 2>/dev/null || true
-    rm -f "$API_SOCK" "$VSOCK_SOCK" /tmp/validate-upload.txt /tmp/validate-download.txt
+    rm -f "$API_SOCK" "$VSOCK_SOCK" /tmp/validate-upload.txt /tmp/validate-download.txt "${VSOCK_ERR_FILE:-}"
 }
 trap cleanup EXIT
 
@@ -141,11 +141,15 @@ for i in $(seq 1 50); do [ -S "$API_SOCK" ] && break; sleep 0.1; done
 fc_api() {
     local ep="$1" body="$2"
     local out
-    out=$(curl -sf --unix-socket "$API_SOCK" -X PUT \
+    # --fail-with-body: exit non-zero on HTTP 4xx/5xx AND include the response body.
+    # Without this, -sf swallows the error and we never know the API call failed.
+    out=$(curl -s --fail-with-body \
+        --unix-socket "$API_SOCK" -X PUT \
         -H "Content-Type: application/json" \
-        "http://localhost/$ep" -d "$body" 2>&1) || true
+        "http://localhost/$ep" -d "$body" 2>&1) \
+        || fail "Firecracker API error on PUT /$ep: $out"
     if echo "$out" | grep -q '"fault_message"'; then
-        fail "Firecracker API error on $ep: $out"
+        fail "Firecracker API fault on PUT /$ep: $out"
     fi
 }
 
@@ -179,20 +183,39 @@ fc_api "machine-config" "{
   \"mem_size_mib\": $VM_MEM_MIB
 }"
 
-curl -sf --unix-socket "$API_SOCK" -X PUT \
+start_out=$(curl -s --fail-with-body \
+    --unix-socket "$API_SOCK" -X PUT \
     -H "Content-Type: application/json" \
     "http://localhost/actions" \
-    -d '{"action_type":"InstanceStart"}' > /dev/null
+    -d '{"action_type":"InstanceStart"}' 2>&1) \
+    || fail "InstanceStart failed: $start_out"
+
+# Firecracker creates the vsock UDS immediately at VM start.
+# If the file never appears the PUT /vsock API call was rejected.
+echo "    Waiting for vsock socket to appear at $VSOCK_SOCK..."
+VSOCK_FOUND=false
+for i in $(seq 1 20); do
+    [ -S "$VSOCK_SOCK" ] && { VSOCK_FOUND=true; break; }
+    sleep 0.5
+done
+if ! $VSOCK_FOUND; then
+    fail "Firecracker did not create vsock socket at $VSOCK_SOCK (waited 10s).
+This usually means the PUT /vsock API call failed silently.
+Check that /tmp/fc-validate-api.sock accepts vsock requests."
+fi
+ok "vsock socket created: $VSOCK_SOCK"
 
 # ---- phase 1: vsock ping -----------------------------------------------
 echo ""
 echo "==> Phase 1: waiting for guest-agent vsock ping (90s timeout)..."
 READY=false
+VSOCK_ERR_FILE=$(mktemp)
 for i in $(seq 1 180); do
     kill -0 "$FC_PID" 2>/dev/null || fail "Firecracker exited unexpectedly (see $FC_LOG)"
 
-    # tr removes whitespace so json.MarshalIndent output matches compact pattern
-    if "$VSOCK_CLIENT" -sock "$VSOCK_SOCK" ping 2>/dev/null \
+    # tr removes whitespace so json.MarshalIndent output matches compact pattern.
+    # Capture stderr to a file so we can print it on failure instead of losing it.
+    if "$VSOCK_CLIENT" -sock "$VSOCK_SOCK" ping 2>"$VSOCK_ERR_FILE" \
             | tr -d ' \n' | grep -q '"ok":true'; then
         READY=true
         break
@@ -200,11 +223,18 @@ for i in $(seq 1 180); do
     [ $((i % 20)) -eq 0 ] && echo "    ... $((i/2))s elapsed — still waiting"
     sleep 0.5
 done
-$READY || fail "guest-agent did not respond to ping in 90s
-Possible causes:
-  1. vsock device not in kernel: check 'grep VIRTIO_VSOCK $FC_LOG'
-  2. guest-agent failed to start: check journald via serial console
-  3. vsock port not reachable: try 'printf CONNECT\\\\x20 52\\\\x0a | nc -U $VSOCK_SOCK'"
+if ! $READY; then
+    VSOCK_DIAG=""
+    if [ -s "$VSOCK_ERR_FILE" ]; then
+        VSOCK_DIAG=$(cat "$VSOCK_ERR_FILE")
+    fi
+    rm -f "$VSOCK_ERR_FILE"
+    fail "guest-agent did not respond to ping in 90s
+Last vsock-client error: ${VSOCK_DIAG:-<none>}
+Socket: $VSOCK_SOCK  CID: $VM_CID  port: 52
+Hint: check 'grep -i vsock $FC_LOG' for kernel module errors."
+fi
+rm -f "$VSOCK_ERR_FILE"
 ok "guest-agent ping"
 
 # ---- phase 2: docker ready ---------------------------------------------
