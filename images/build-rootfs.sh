@@ -51,12 +51,16 @@ echo "==> Installing systemd units..."
 sudo install -m 0644 "$SYSTEMD_DIR/guestinit.service"   "$MOUNT/etc/systemd/system/guestinit.service"
 sudo install -m 0644 "$SYSTEMD_DIR/guest-agent.service" "$MOUNT/etc/systemd/system/guest-agent.service"
 
-# Enable units
+# Enable units.
+# Use RELATIVE symlink targets (../foo.service) so that:
+#   - inside the VM: resolves correctly relative to the wants directory
+#   - from the host with rootfs mounted: -e check also resolves correctly
+# This matches what `systemctl enable` does natively.
 sudo mkdir -p "$MOUNT/etc/systemd/system/network.target.wants"
 sudo mkdir -p "$MOUNT/etc/systemd/system/multi-user.target.wants"
-sudo ln -sf /etc/systemd/system/guestinit.service \
+sudo ln -sf ../guestinit.service \
     "$MOUNT/etc/systemd/system/network.target.wants/guestinit.service"
-sudo ln -sf /etc/systemd/system/guest-agent.service \
+sudo ln -sf ../guest-agent.service \
     "$MOUNT/etc/systemd/system/multi-user.target.wants/guest-agent.service"
 
 echo "==> Rootfs ready: $ROOTFS"
